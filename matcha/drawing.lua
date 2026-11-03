@@ -569,6 +569,5 @@ if type(previous) == "table" and previous.IsMatchaDraw and previous.Shutdown the
 end
 draw.IsMatchaDraw = true
 env.draw = draw
-print("[matcha_draw] loaded - global `draw` is ready")
 
 return draw
