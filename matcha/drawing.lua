@@ -49,9 +49,9 @@ local CONFIG = {
 	AutoZIndex = true,
 	ZBase = 0,
 
-	-- Docs list `FontSize` for Text, but the docs' own ESP example sets `Size`. If text size
-	-- doesn't change, try "Size".
-	TextSizeProp = "FontSize",
+	-- Confirmed in Matcha: Text uses `Size` (the docs' property list says `FontSize`, but Matcha
+	-- reports "Unknown property FontSize").
+	TextSizeProp = "Size",
 
 	-- Serotonin font name -> Matcha Drawing.Fonts key
 	FontMap = {
