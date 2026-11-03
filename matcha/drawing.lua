@@ -185,8 +185,8 @@ end
 -- ======================================================================
 -- Runs once per Heartbeat. Everything drawn since the last tick is "the frame": objects beyond
 -- that count are hidden, then the counters reset so the next draw.* call reuses slot 1, 2, 3...
--- Order vs. your own Heartbeat callbacks doesn't matter. If this runs before yours, an object
--- you stop drawing disappears one tick later than strictly necessary (~1 frame).
+-- Order vs. your own Heartbeat callbacks doesn't matter. If this runs before yours (usual, since
+-- it connects at load), an object you stop drawing disappears ~1 frame later than strictly necessary.
 local function finalizeFrame()
 	for _, pool in pairs(pools) do
 		local n, shown = pool.n, pool.shown
@@ -427,7 +427,7 @@ end
 local function resolveFont(name)
 	local key = CONFIG.FontMap[name] or CONFIG.DefaultFont
 	local fonts = Drawing.Fonts
-	return fonts and fonts[key], (CONFIG.FontSizes[key] or CONFIG.DefaultFontSize)
+	return fonts and fonts[key], (CONFIG.FontSizes[key] or CONFIG.DefaultFontSize), key
 end
 
 local function drawText(str, x, y, color, font, alpha, outline)
@@ -450,14 +450,68 @@ function draw.TextOutlined(str, x, y, color, font, alpha)
 	drawText(str, x, y, color, font, alpha, true)
 end
 
--- Matcha documents no text-measure API. This tries a hidden scratch Text object's TextBounds
--- (if it exists) and falls back to a rough estimate. Results are memoized.
+-- ----------------------------------------------------------------------
+-- Text measuring
+-- ----------------------------------------------------------------------
+-- Matcha's Drawing docs have no measure API; the global `gettextsize` returns width, or
+-- width + height. Its argument order isn't documented, so on first use we try the plausible
+-- signatures and keep the first one that reacts to the size argument. The choice is printed once.
+-- If gettextsize is missing/unusable we fall back to a hidden Text object's TextBounds, then to
+-- a rough estimate.
+local function unpackSize(a, b)
+	if typeof(a) == "Vector2" then return a.X, a.Y end
+	if type(a) == "number" then
+		return a, (type(b) == "number") and b or nil
+	end
+	return nil, nil
+end
+
+local measureFn, measureProbed = nil, false
+
+local function probeMeasure(fontVal, fontKey, size)
+	measureProbed = true
+	if type(gettextsize) ~= "function" then
+		print("[matcha_draw] gettextsize not found - text widths will be estimated")
+		return
+	end
+	local variants = {
+		{ "(text, font, size)",       function(s, fv, fk, z) return gettextsize(s, fv, z) end },
+		{ "(text, size, font)",       function(s, fv, fk, z) return gettextsize(s, z, fv) end },
+		{ '(text, "FontName", size)', function(s, fv, fk, z) return gettextsize(s, fk, z) end },
+		{ "(text, size)",             function(s, fv, fk, z) return gettextsize(s, z) end },
+		{ "(text, font)",             function(s, fv) return gettextsize(s, fv) end },
+		{ '(text, "FontName")',       function(s, fv, fk) return gettextsize(s, fk) end },
+		{ "(text)",                   function(s) return gettextsize(s) end },
+	}
+	local fallback
+	for _, var in ipairs(variants) do
+		local ok1, a1, b1 = pcall(var[2], "MMMMMMMM", fontVal, fontKey, size)
+		local ok2, a2, b2 = pcall(var[2], "MMMMMMMM", fontVal, fontKey, size * 2)
+		local w1 = ok1 and unpackSize(a1, b1) or nil
+		local w2 = ok2 and unpackSize(a2, b2) or nil
+		if w1 and w1 > 0 then
+			if w2 and w2 ~= w1 then
+				measureFn = var[2]
+				print("[matcha_draw] gettextsize signature detected: " .. var[1])
+				return
+			end
+			fallback = fallback or var
+		end
+	end
+	if fallback then
+		measureFn = fallback[2]
+		print("[matcha_draw] gettextsize signature (size argument not detected): " .. fallback[1])
+	else
+		print("[matcha_draw] gettextsize returned nothing usable - text widths will be estimated")
+	end
+end
+
 local measureObj
 local sizeMemo = {}
 local sizeMemoCount = 0
 function draw.GetTextSize(str, font)
 	str = tostring(str)
-	local fontVal, size = resolveFont(font)
+	local fontVal, size, fontKey = resolveFont(font)
 	if str == "" then return 0, size end
 
 	local fkey = font or ""
@@ -469,21 +523,30 @@ function draw.GetTextSize(str, font)
 	local hit = memo[str]
 	if hit then return hit[1], hit[2] end
 
+	if not measureProbed then probeMeasure(fontVal, fontKey, size) end
+
 	local w, h
-	pcall(function()
-		if not measureObj then
-			measureObj = Drawing.new("Text")
-			measureObj.Visible = false
-		end
-		measureObj.Text = str
-		if fontVal ~= nil then measureObj.Font = fontVal end
-		measureObj[CONFIG.TextSizeProp] = size
-		local b = measureObj.TextBounds
-		if b then w, h = b.X, b.Y end
-	end)
+	if measureFn then
+		local ok, a, b = pcall(measureFn, str, fontVal, fontKey, size)
+		if ok then w, h = unpackSize(a, b) end
+	end
+	if not w or w <= 0 then
+		pcall(function()
+			if not measureObj then
+				measureObj = Drawing.new("Text")
+				measureObj.Visible = false
+			end
+			measureObj.Text = str
+			if fontVal ~= nil then measureObj.Font = fontVal end
+			measureObj[CONFIG.TextSizeProp] = size
+			local bnd = measureObj.TextBounds
+			if bnd then w, h = bnd.X, bnd.Y end
+		end)
+	end
 	if not w or w <= 0 then
 		w, h = #str * size * 0.5, size -- rough estimate
 	end
+	h = h or size
 
 	if sizeMemoCount > 512 then
 		sizeMemo = {}
@@ -569,5 +632,11 @@ if type(previous) == "table" and previous.IsMatchaDraw and previous.Shutdown the
 end
 draw.IsMatchaDraw = true
 env.draw = draw
+
+-- Start the frame clock NOW (not lazily on the first draw call). If it started mid-frame, that
+-- first frame's draws would never be closed out and frame 2 would draw into a second set of
+-- slots (double objects + one frame of duplicates).
+pcall(startClock)
+print("[matcha_draw] loaded - global `draw` is ready")
 
 return draw
