@@ -10,7 +10,8 @@
       * assigning ZIndex in call order, so later calls render on top (like Serotonin)
 
     USAGE
-        local draw = loadstring(game:HttpGet("..."))()   -- this file returns `draw`
+        loadstring(httpget("YOUR_URL"))()   -- NOT `local draw = loadstring(...)()`: Matcha drops
+                                            -- return values. The library sets the global `draw`.
 
         RunService.Heartbeat:Connect(function()
             if example_toggle() then
@@ -553,5 +554,21 @@ for _, name in ipairs(names) do
 	draw[camel] = fn
 	draw[snake] = fn
 end
+
+-- ======================================================================
+-- Publish as a global
+-- ======================================================================
+-- Matcha's loadstring() DROPS a chunk's top-level `return` value, so
+--     local draw = loadstring(httpget(url))()      --> draw == nil
+-- can never work. Instead the library puts itself in the global environment; after
+-- loadstring(httpget(url))() just use the global `draw`.
+local env = _G or getfenv(0)
+local previous = env.draw
+if type(previous) == "table" and previous.IsMatchaDraw and previous.Shutdown then
+	pcall(previous.Shutdown) -- re-running the script: remove the old clock + old drawings
+end
+draw.IsMatchaDraw = true
+env.draw = draw
+print("[matcha_draw] loaded - global `draw` is ready")
 
 return draw
